@@ -1,4 +1,5 @@
 import os
+import shutil
 from PyQt5 import QtCore, QtGui, QtWidgets
 from miditoolkit import MidiFile
 from PyQt5.QtWidgets import QGraphicsScene, QGraphicsRectItem, QGraphicsView, QGraphicsLineItem, QMessageBox, QFileDialog
@@ -21,21 +22,37 @@ class Ui_MainWindow(object):
         self.is_recording = False
         self.midi_duration = 0
         self.current_time = 0
+        self.volume = 0.5  
         
         self.update_timer_progress = QtCore.QTimer()
         self.update_timer_progress.timeout.connect(self.update_playback_progress)
         self.update_timer_recorder = QtCore.QTimer()
         self.update_timer_recorder.timeout.connect(self.update_recorder_progress)
         self.midi_events = []
+        self.recorder = None
         self.input_ports=recorder.list_input_ports()
-        self.selected_port=0
-        # print(self.input_ports)
+        self.selected_port= 0
+        self.selected_instrument_program = 0
+        # 定义一些常用的General MIDI乐器音色
+        self.instrument_names = {
+            0: "Acoustic Grand Piano", 1: "Bright Acoustic Piano", 2: "Electric Grand Piano",
+            3: "Honky-tonk Piano", 4: "Electric Piano 1", 5: "Electric Piano 2",
+            6: "Harpsichord", 7: "Clavinet", 8: "Celesta", 9: "Glockenspiel",
+            10: "Music Box", 11: "Vibraphone", 12: "Marimba", 13: "Xylophone",
+            14: "Tubular Bells", 15: "Dulcimer", 16: "Drawbar Organ", 17: "Percussive Organ",
+            24: "Acoustic Guitar (nylon)", 25: "Acoustic Guitar (steel)", 32: "Acoustic Bass",
+            40: "Violin", 48: "String Ensemble 1", 56: "Trumpet", 64: "Soprano Sax",
+            72: "Clarinet", 80: "Square Wave", 88: "New Age Pad", 96: "Reverse Cymbal",
+            104: "Sitar", 112: "Woodblock", 120: "Seashore", 127: "Gunshot"
+        }
         
         self.newfile = "./output/output.mid"
         self.soundfont_path = "./soundfont/GeneralUser-GS.sf2"
         self.fluidsynth_path = "./fluidsynth-2.4.3/bin/fluidsynth.exe"
 
     def setupUi(self, MainWindow):
+        icon = QtGui.QIcon("./dist/icon.ico")
+        MainWindow.setWindowIcon(icon)
         MainWindow.setObjectName('Mainwindow')
         MainWindow.resize(802, 527)
         MainWindow.setStyleSheet("")
@@ -244,8 +261,8 @@ class Ui_MainWindow(object):
         self.menuTools.addAction(self.actionSave_file_as)
         self.menuTools.addAction(self.actionExit)
         self.menuTools.addAction(self.actionExit_3)
-        #self.menuTrack.addAction(self.actionTrack_0)
-        self.menuTool.addAction(self.action1)
+        # self.menuTool.addAction(self.action1)
+        self._create_instrument_menu(MainWindow)
         
         self.menuBar.addAction(self.menuTools.menuAction())
         self.menuBar.addAction(self.menuTrack.menuAction())
@@ -272,6 +289,9 @@ class Ui_MainWindow(object):
         self.horizontalSlider.sliderMoved.connect(self.on_slider_moved)
         self.horizontalSlider.sliderPressed.connect(self.on_slider_pressed)
         self.horizontalSlider.sliderReleased.connect(self.seek_playback)
+        self.verticalSlider.valueChanged.connect(self.set_master_volume)
+        # Set initial volume based on the slider's default value
+        self.set_master_volume(self.verticalSlider.value())
 
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
@@ -299,7 +319,7 @@ class Ui_MainWindow(object):
         self.actionExit_2.setText(_translate("MainWindow", "关闭程序"))
         self.actionExit_3.setText(_translate("MainWindow", "关闭程序"))
         #self.actionTrack_0.setText(_translate("MainWindow", "Track 0"))
-        self.action1.setText(_translate("MainWindow", "音色"))
+        # self.action1.setText(_translate("MainWindow", "音色"))
 
     def new_file(self):
         """新建文件操作"""
@@ -462,8 +482,7 @@ class Ui_MainWindow(object):
         self.horizontalSlider.setEnabled(False)
         
         self.graphicsView.clear_scene()
-        # self.graphicsView.clear_notes()
-        # self.graphicsView._draw_piano_background()
+
         
         # 删除临时文件
         if hasattr(self, 'temp_wav_path') and os.path.exists(self.temp_wav_path):
@@ -509,19 +528,33 @@ class Ui_MainWindow(object):
         if hasattr(self, 'is_recording') and self.is_recording:
             recorder.stop_recording()
         
-        # 删除临时文件
-        if hasattr(self, 'temp_wav_path') and os.path.exists(self.temp_wav_path):
-            try:
-                os.remove(self.temp_wav_path)
-            except Exception as e:
-                print(f"删除临时文件失败: {str(e)}")
-        
         # 关闭MIDI设备
         if hasattr(self, 'midiin') and self.midiin:
             self.midiin.close_port()
         
         # 关闭Pygame
-        pygame.mixer.quit()
+        if pygame.mixer.get_init(): # Check if mixer is initialized before quitting
+            pygame.mixer.quit()
+            
+        # 清空临时文件夹
+        temp_dir=TEMP_DIR
+        if os.path.exists(temp_dir):
+            try:
+                for filename in os.listdir(temp_dir):
+                    file_path = os.path.join(temp_dir, filename)
+                    try:
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+                        elif os.path.isdir(file_path):
+                            shutil.rmtree(file_path)
+                    except Exception as e:
+                        print(f"删除文件/目录失败: {file_path}, 错误: {str(e)}")
+            except Exception as e:
+                print(f"访问临时文件夹失败: {str(e)}")
+        
+        
+        
+        
     def open_midi_file(self):
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             None, "Open MIDI File", "", "MIDI Files (*.mid *.midi)")
@@ -689,7 +722,7 @@ class Ui_MainWindow(object):
                 tempo = raw_tempo if is_valid_tempo(raw_tempo) else tempo
             # 计算时长（秒）
             total_beats = last_tick / ticks_per_beat
-            duration = total_beats * (tempo / 1_000_000)
+            duration = total_beats * (tempo / 1_000_000) + 3 # 加3秒缓冲
             minute = int(duration // 60)
             second = int(duration - minute * 60)
             self.label_5.setText(f"00:00 / {minute:02d}:{second:02d}")
@@ -699,15 +732,49 @@ class Ui_MainWindow(object):
             print(f"计算错误: {str(e)}")
             return 0
     
-    def midi_to_wav(self,midi_file_path, output_wav_path):
-    # 使用fluidsynth将MIDI转换为WAV
-        fs = FluidSynth(
-                    sound_font=self.soundfont_path,
-                    # executable=self.fluidsynth_path
-                )
-        fs.midi_to_audio(midi_file_path, output_wav_path)
         
-        print(f"已成功将 {midi_file_path} 转换为 {output_wav_path}")
+    def midi_to_wav(self,midi_file_path, output_wav_path):
+        """
+        使用FluidSynth将MIDI转换为WAV，并应用选定的乐器音色。
+        参数:
+            midi_file_path (str): 原始MIDI文件的路径。
+            output_wav_path (str): 输出WAV文件的路径。
+        """
+        # 加载原始MIDI文件以创建临时副本
+        temp_midi = MidiFile(midi_file_path) 
+
+        # 应用选定的乐器程序到所有音轨的乐器
+        for instrument in temp_midi.instruments:
+            instrument.program = self.selected_instrument_program
+            # 注意：这里将所有音轨的乐器都设置为相同的音色。
+            # 如果需要每个音轨保持原有音色，只改变特定音轨，则需要更复杂的逻辑。
+
+        # 保存这个修改后的临时MIDI文件
+        temp_modified_midi_path = os.path.join(TEMP_DIR, os.urandom(16).hex() + "_modified.mid")
+        try:
+            temp_midi.dump(temp_modified_midi_path)
+        except Exception as e:
+            print(f"保存临时修改的MIDI文件失败: {e}")
+            raise # 重新抛出异常，让上层函数处理
+
+        try:
+            fs = FluidSynth(
+                        sound_font=self.soundfont_path,
+                        # executable=self.fluidsynth_path # 如果fluidsynth.exe不在PATH中，请取消注释
+                    )
+            fs.midi_to_audio(temp_modified_midi_path, output_wav_path)
+            print(f"已成功将 {midi_file_path} (音色 {self.selected_instrument_program}) 转换为 {output_wav_path}")
+        except Exception as e:
+            print(f"MIDI to WAV 转换失败: {e}")
+            raise # 重新抛出异常，让上层函数处理
+        finally:
+            # 清理临时修改的MIDI文件
+            if os.path.exists(temp_modified_midi_path):
+                try:
+                    os.remove(temp_modified_midi_path)
+                    print(f"已删除临时修改的MIDI文件: {temp_modified_midi_path}")
+                except Exception as e:
+                    print(f"删除临时修改的MIDI文件失败: {str(e)}")
         
     def toggle_play_pause(self):
         if not self.midi_file_path:
@@ -725,7 +792,25 @@ class Ui_MainWindow(object):
                 self.current_time = 0
 
             if self.current_time == 0:
-                pygame.mixer.music.load(self.temp_wav_path)
+                # 确保在播放前加载的是最新的WAV文件（可能因音色切换而更新）
+                if hasattr(self, 'temp_wav_path') and os.path.exists(self.temp_wav_path):
+                    pygame.mixer.music.load(self.temp_wav_path)
+                else:
+                    # 如果temp_wav_path不存在，尝试重新生成
+                    try:
+                        temp_wav_path = os.path.join(TEMP_DIR, os.urandom(16).hex() + ".wav")
+                        self.midi_to_wav(self.midi_file_path, temp_wav_path)
+                        self.temp_wav_path = temp_wav_path
+                        pygame.mixer.music.load(self.temp_wav_path)
+                    except Exception as e:
+                        QMessageBox.warning(
+                            None,
+                            "播放错误",
+                            f"无法生成或加载音频文件进行播放:\n{str(e)}",
+                            QMessageBox.StandardButton.Ok
+                        )
+                        return # 无法播放，直接返回
+                # pygame.mixer.music.load(self.temp_wav_path)
                 pygame.mixer.music.play()
                 
             else:
@@ -840,12 +925,13 @@ class Ui_MainWindow(object):
             self.playback_start_time = time.time()
             self.update_timer_progress.start(100)
         self.graphicsView.update_time(int((seek_time / self.midi_duration) * 1000))
+
     
     def toggle_record(self):
         if self.is_recording:
             recorder.stop_recording()
             self.is_recording = False
-            current_midi=recorder.export_to_midi()
+            current_midi=recorder.export_to_midi('./output/record_output.mid')
             print(current_midi)
             if current_midi is None:
                 QMessageBox.critical(
@@ -867,7 +953,7 @@ class Ui_MainWindow(object):
                 return
             else:
                 self.current_midi=current_midi
-                self.open_midi("/home/pi/Desktop/final_codes/output.mid")
+                self.open_midi("./output/record_output.mid")
                 self.save_file_as()
                 self.pushButton.setText("开始录制")
                 self.pushButton.setStyleSheet("background-color: rgba(170, 0, 0,200);\n"
@@ -927,6 +1013,91 @@ class Ui_MainWindow(object):
     def on_track_selected(self, port_index):
         self.selected_port=port_index
         print(port_index)
+        
+    def set_master_volume(self, value):
+        """
+        根据滑块值调整主音量。
+        参数:
+            value (int): 滑块的当前值 (0-100)。
+        """
+        # 将滑块值 (0-100) 转换为 pygame.mixer 的音量范围 (0.0-1.0)
+        self.volume = value / 100.0
+        pygame.mixer.music.set_volume(self.volume)
+        
+    def _create_instrument_menu(self, MainWindow):
+        """
+        创建并填充“音色”子菜单。
+        """
+        # 清空原有的“工具”菜单项，准备添加子菜单
+        self.menuTool.clear()
+
+        # 创建“音色”子菜单
+        self.menuInstrument = self.menuTool.addMenu("音色")
+        
+        # 创建一个QActionGroup来确保音色选择的互斥性
+        self.instrument_action_group = QtWidgets.QActionGroup(MainWindow)
+        self.instrument_action_group.setExclusive(True) # 确保只有一个Action被选中
+
+        # 遍历乐器名称字典，创建并添加菜单项
+        for program_number, instrument_name in self.instrument_names.items():
+            action_text = f"{program_number}: {instrument_name}"
+            action = QtWidgets.QAction(action_text, MainWindow)
+            action.setCheckable(True) # 使其可被选中
+            action.setData(program_number) # 存储乐器程序号
+            self.instrument_action_group.addAction(action)
+            self.menuInstrument.addAction(action)
+            
+            # 连接信号到处理函数
+            action.triggered.connect(lambda checked, pn=program_number: self._on_instrument_selected(pn))
+
+            # 默认选中第一个乐器 (Acoustic Grand Piano)
+            if program_number == self.selected_instrument_program:
+                action.setChecked(True)
+        
+    def _on_instrument_selected(self, program_number):
+        """
+        处理音色菜单选择事件。
+        参数:
+            program_number (int): 选中的乐器程序号。
+        """
+        old_program_number= self.selected_instrument_program
+        if self.selected_instrument_program == program_number:
+            # 如果选择的是当前已经选中的音色，则不执行任何操作
+            return
+
+        self.selected_instrument_program = program_number
+        print(f"Selected instrument: {self.instrument_names.get(program_number, 'Unknown')} (Program: {program_number})")
+        
+        # 如果当前有加载的MIDI文件，并且正在播放或已暂停，则重新生成WAV并加载
+        if self.current_midi and self.midi_file_path:
+            # 停止当前播放，以避免文件锁定问题
+            if self.is_playing:
+                self.stop_playback()
+            
+            # 重新生成WAV文件以应用新的音色
+            try:
+
+                temp_wav_path = os.path.join(TEMP_DIR, os.urandom(16).hex() + ".wav")
+                self.midi_to_wav(self.midi_file_path, temp_wav_path)
+                self.temp_wav_path = temp_wav_path
+                
+                # 如果之前是播放状态，则重新开始播放
+                if not self.is_playing and self.pushButton_4.text() == "暂停": # 检查是否是暂停状态
+                    self.toggle_play_pause() # 恢复播放
+                elif not self.is_playing: # 如果是停止状态，也加载一下
+                    pygame.mixer.music.load(self.temp_wav_path)
+
+            except Exception as e:
+                QMessageBox.warning(
+                    None,
+                    "音色切换失败",
+                    f"无法应用新音色并生成预览音频:\n{str(e)}",
+                    QMessageBox.StandardButton.Ok
+                )
+                # 恢复到上次的音色（可选）
+                self.selected_instrument_program = old_program_number
+    
+    
     # ... [rest of the methods remain the same as they don't contain PyQt-specific code]
     # All the other methods (new_file, save_file, etc.) remain unchanged since they don't contain PyQt-specific code
     # that needs conversion between PyQt5 and PyQt6
@@ -948,6 +1119,7 @@ class MainWindow(QtWidgets.QMainWindow):
 if __name__ == "__main__":
     import sys
     app = QtWidgets.QApplication(sys.argv)
+    app.setWindowIcon(QtGui.QIcon("./dist/icon.ico"))
     TEMP_DIR = "./temp"
     os.makedirs(TEMP_DIR, exist_ok=True)
     # 初始化外部依赖
